@@ -14,40 +14,23 @@ Requires-Dist: aiohttp
 Requires-Dist: orjson
 Requires-Dist: uvicorn
 Requires-Dist: fastapi
+Requires-Dist: requests>=2.25.0
 Provides-Extra: dev
-Requires-Dist: requests>=2.25.0; extra == "dev"
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
 
-# VLLM Router
+# vLLM Router
 
-A high-performance request routing system for vLLM deployments, providing advanced load balancing and specialized routing for modern LLM serving architectures.
+A high-performance and light-weight request forwarding system for vLLM large scale deployments, providing advanced load balancing methods and prefill/decode disaggregation support.
 
-## Release Roadmap
-
-- **September 2025**: Internal testing with select vLLM developers. Core features implemented and tested:
-  - Data Parallelism-aware Routing
-  - Consistent Hash Load Balancing
-  - Prefill/Decode Disaggregation Aware Routing
-- **October 2025**: Development and testing of remaining functionalities ([progress tracking](https://docs.google.com/document/d/1d1gi5ex7yCpfMtmCQtwVcsmtOjDIevIOp8HLiA_WlPk/edit?tab=t.0))
-- **November 2025**: Evaluation for potential integration into vLLM core repository
-
-## Built on VLLM Router Foundation
-
-This router is adapted from the excellent [VLLM router](https://github.com/vllm-project/vllm/tree/main/vllm-router), enabling data parallelism across vLLM instances with enterprise-grade reliability and performance.
-
-## Attribution and Acknowledgments
-
-This project builds upon the foundational work of the VLLM router developed by the VLLM team. We deeply appreciate their innovative design and open-source contribution to the LLM serving ecosystem.
-
-### Key Features Adapted from VLLM Router
+### Key Features
 
 - **Core Architecture**: Request routing framework and async processing patterns
-- **API Compatibility**: Seamless migration path between VLLM and vLLM ecosystems
 - **Load Balancing**: Multiple algorithms (cache-aware, power of two, consistent hashing, random, round robin)
 - **Prefill-Decode Disaggregation**: Specialized routing for separated processing phases
 - **Service Discovery**: Kubernetes-native worker management and health monitoring
-- **Enterprise Features**: Circuit breakers, retry logic, metrics collection, and tool parsing
-
-Both VLLM and vLLM projects use the Apache-2.0 license, enabling this collaborative adaptation. This router maintains API compatibility with VLLM router and minimizes code changes to facilitate easy ecosystem transitions and foster potential future unification.
+- **Enterprise Features**: Circuit breakers, retry logic, metrics collection
 
 ## Quick Start
 
@@ -64,34 +47,76 @@ source $HOME/.cargo/env
 # Verify installation
 rustc --version
 cargo --version
+
+# Install protobuf compiler (on Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler libprotobuf-dev
 ```
 
 **Python with pip installed**
 
 ### Installation & Basic Usage
 
+#### Rust Binary
 ```bash
 # Build Rust components
 cargo build --release
+```
+
+#### Python Package
+```bash
+pip install setuptools-rust wheel build
+python -m build
+pip install dist/*.whl
+
+# Rebuild & reinstall in one step during development
+python -m build && pip install --force-reinstall dist/*.whl
 ```
 
 ### Usage Examples
 
 #### Standard Data Parallelism Routing
 ```bash
-# Launch router with data parallelism awareness
+# Launch router with data parallelism (8 replicas per worker URL)
+# When data-parallel-size > 1, the router automatically creates DP-aware workers
 ./target/release/vllm-router \
-    --worker-urls http://0.0.0.0:8000 \
-    --dp-aware --policy consistent_hash
+    --worker-urls http://worker1:8000 http://worker2:8000 \
+    --policy consistent_hash \
+    --intra-node-data-parallel-size 8
 
 # Alternative: using cargo run
 cargo run --release -- \
-    --worker-urls http://0.0.0.0:8000 \
-    --dp-aware --policy consistent_hash
+    --worker-urls http://worker1:8000 http://worker2:8000 \
+    --policy consistent_hash \
+    --intra-node-data-parallel-size 8
+
+# Alternative: using python launcher
+vllm-router \
+  --worker-urls http://worker1:8000 http://worker2:8000 \
+    --policy consistent_hash \
+    --intra-node-data-parallel-size 8
 ```
 
-#### Prefill-Decode Disaggregation with ZMQ Service Discovery
+#### Prefill-Decode Disaggregation
 ```bash
+# When vLLM runs the NIXL connector, prefill/decode URLs are required.
+# See a working example in scripts/llama3.1/ folder.
+cargo run --release -- \
+    --policy consistent_hash \
+    --vllm-pd-disaggregation \
+    --prefill http://127.0.0.1:8081 \
+    --prefill http://127.0.0.1:8082 \
+    --decode http://127.0.0.1:8083 \
+    --decode http://127.0.0.1:8084 \
+    --decode http://127.0.0.1:8085 \
+    --decode http://127.0.0.1:8086 \
+    --host 127.0.0.1 \
+    --port 8090 \
+    --intra-node-data-parallel-size 1 \
+
+
+# When vLLM runs the NCCL connector, ZMQ based discovery is supported.
+# See a working example in scripts/install.sh
 cargo run --release -- \
     --policy consistent_hash \
     --vllm-pd-disaggregation \
@@ -103,25 +128,6 @@ cargo run --release -- \
 ```
 
 ## Configuration
-
-### Logging
-
-Enable structured logging with optional file output:
-
-```python
-from vllm_router import Router
-
-# Console logging (default)
-router = Router(worker_urls=["http://worker1:8000", "http://worker2:8000"])
-
-# File logging enabled
-router = Router(
-    worker_urls=["http://worker1:8000", "http://worker2:8000"],
-    log_dir="./logs"  # Daily log files created here
-)
-```
-
-Set log level with `--log-level` flag ([documentation](https://docs.vllm.ai/backend/server_arguments.html#logging)).
 
 ### Metrics
 
@@ -166,7 +172,6 @@ vllm-router \
 - `Closed` → `Open` after N consecutive failures (failure-threshold)
 - `Open` → `HalfOpen` after timeout (timeout-duration-secs)
 - `HalfOpen` → `Closed` after M consecutive successes (success-threshold)
-- Any failure in `HalfOpen` reopens immediately
 
 **Retry Policy:** Retries on HTTP status codes 408/429/500/502/503/504, with backoff/jitter between attempts.
 
@@ -183,6 +188,28 @@ vllm-router \
 
 **Default headers:** `x-request-id`, `x-correlation-id`, `x-trace-id`, `request-id`
 
+### Load Balancing Policies
+
+The router supports multiple load balancing policies:
+
+| Policy | Description | Session Affinity | Use Case |
+|--------|-------------|------------------|----------|
+| `round_robin` | Sequential distribution across workers | No | General purpose, even distribution |
+| `random` | Uniform random selection | No | Simple deployments |
+| `consistent_hash` | Routes same session/user to same worker | Yes | Multi-turn chat, KV cache reuse |
+| `power_of_two` | Picks least loaded of two random workers | No | Load-sensitive workloads |
+| `cache_aware` | Optimizes for prefix cache hits | Yes | Repeated prompts, few-shot |
+
+```bash
+# Example: Using consistent_hash with HTTP header for session affinity
+curl -X POST http://router:8000/v1/chat/completions \
+  -H "X-Session-ID: my-session-123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama-3", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+For detailed configuration options, hash key priorities, and usage examples, see [Load Balancing Documentation](docs/load_balancing/README.md).
+
 ## Advanced Features
 
 ### Kubernetes Service Discovery
@@ -196,41 +223,6 @@ vllm-router \
     --service-discovery \
     --selector app=vllm-worker role=inference \
     --service-discovery-namespace default
-```
-
-#### RBAC Configuration
-
-**Namespace-scoped (recommended):**
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: vllm-router
-  namespace: vllm-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  namespace: vllm-system
-  name: vllm-router
-rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: vllm-router
-  namespace: vllm-system
-subjects:
-- kind: ServiceAccount
-  name: vllm-router
-  namespace: vllm-system
-roleRef:
-  kind: Role
-  name: vllm-router
-  apiGroup: rbac.authorization.k8s.io
 ```
 
 ### Command Line Arguments Reference
@@ -269,25 +261,6 @@ The continuous integration pipeline includes comprehensive testing, benchmarking
 - **PyPI Publishing**: Wheels and source distributions published when version changes in `pyproject.toml`
 - **Container Images**: Docker images published using `/docker/Dockerfile.router`
 
-## Key Features
+## Acknowledgement
 
-### Performance & Scalability
-- **High Performance**: Rust-based routing with connection pooling and optimized request handling
-- **Scalability**: Handles thousands of concurrent connections with efficient resource utilization
-
-### Advanced Load Balancing
-- **Cache-Aware**: Intelligent routing based on cache locality for optimal performance
-- **Power of Two**: Chooses the less loaded of two randomly selected workers
-- **Random**: Distributes requests randomly across available workers
-- **Round Robin**: Sequential distribution across workers in rotation
-- **Consistent Hash**: Session-aware routing for stateful workloads
-
-### Specialized Routing
-- **Prefill-Decode Disaggregation**: Specialized load balancing for separated prefill and decode servers
-- **Data Parallelism Awareness**: Optimized routing for distributed training and inference
-
-### Enterprise Grade
-- **Service Discovery**: Automatic Kubernetes worker discovery and health management
-- **Monitoring**: Comprehensive Prometheus metrics and structured logging
-- **Circuit Breakers**: Automatic fault tolerance and recovery
-- **Retry Logic**: Intelligent request retry with exponential backoff
+This project is a fork of [SGLang Model Gateway](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway), and we would like to explicitly acknowledge and thank the original authors for their work. At this stage, our fork includes only minimal changes to preserve the existing interface and ensure compatibility with vLLM. We anticipate further divergence as we pursue the roadmap we have in mind, which is the reason for creating the fork.
